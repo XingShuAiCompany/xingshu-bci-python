@@ -1,0 +1,1111 @@
+openapi: 3.1.0
+info:
+  title: XingShu BCI Platform Local API
+  description: |
+    Local HTTP + WebSocket API exposed by the XingShu BCI desktop app for
+    third-party experiments, realtime applications, data collection scripts,
+    and SDK integrations.
+
+    The service binds to 127.0.0.1 only. The port is dynamic; discover it from
+    the bootstrap file written by the desktop app:
+
+    - Windows: `%APPDATA%/XingShu BCI/api/bootstrap.json`
+    - macOS: `~/Library/Application Support/XingShu BCI/api/bootstrap.json`
+    - Linux: `~/.config/XingShu BCI/api/bootstrap.json`
+
+    Create API tokens in the app's Developer Center. All `/v1/*` endpoints
+    require `Authorization: Bearer xs_live_...`. WebSocket clients should
+    also authenticate with the `Authorization` header on the upgrade request;
+    the `?token=xs_live_...` query parameter remains supported only as a
+    fallback for clients that cannot set upgrade headers and must be
+    URL-encoded (query strings tend to leak into logs and proxies).
+  version: "1.0.0"
+  license:
+    name: Proprietary
+servers:
+  - url: http://127.0.0.1:0
+    description: Local API (port is dynamic; read from bootstrap.json)
+tags:
+  - name: System
+  - name: Device
+  - name: Config
+  - name: Recording
+  - name: Playback
+  - name: SignalQuality
+  - name: Networking
+  - name: Analysis
+  - name: Logs
+  - name: Experiments
+  - name: Auth
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: "xs_live_<hex>"
+
+  schemas:
+    Error:
+      type: object
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                Machine-readable error code. Common values:
+                UNAUTHORIZED, FORBIDDEN, NOT_FOUND, BAD_REQUEST, CONFLICT,
+                EXPERIMENTS_UNAVAILABLE, INTERNAL_ERROR. Experiment endpoints
+                additionally use MODEL_PARADIGM_UNSUPPORTED, MODEL_NOT_FOUND,
+                MODEL_TOKEN_MISMATCH, MODEL_MISMATCH, MODEL_DISCONNECTED,
+                MODEL_HEARTBEAT_TIMEOUT, PREDICTION_NOT_PENDING,
+                PREDICTION_ATTEMPT_REQUIRED, PREDICTION_ATTEMPT_MISMATCH,
+                PREDICTION_TARGET_INVALID. Clients must tolerate new codes.
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
+        requestId: { type: string }
+
+    Ok:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean, const: true }
+        requestId: { type: string }
+
+    VersionInfo:
+      type: object
+      properties:
+        appName: { type: string }
+        appVersion: { type: string }
+        apiVersion: { type: string }
+        protocol: { type: string }
+        brainflowVersion: { type: string }
+
+    XingShuTopology:
+      type: object
+      description: |
+        Runtime XingShu ADS topology. Legacy N1 supports one or two ADS1299
+        boards (8 or 16 channels); N1 Pro is a fixed four-board, 32-channel
+        UDP design. A ready topology is published only after the configured
+        width has been verified, or when the fixed N1 Pro topology is active.
+      additionalProperties: true
+      properties:
+        state:
+          type: string
+          enum: [unknown, configuring, verifying, ready, recovering, mismatch, hardware-fault]
+        source:
+          type: string
+          enum: [auto, manual, fixed]
+          nullable: true
+        configuredBoardCount: { type: integer, minimum: 1, maximum: 4, nullable: true }
+        verifiedBoardCount: { type: integer, minimum: 0, maximum: 4, nullable: true }
+        detectedBoardCount: { type: integer, minimum: 0, maximum: 4, nullable: true, deprecated: true }
+        detectedBoards:
+          type: integer
+          nullable: true
+          deprecated: true
+        boardCount: { type: integer, enum: [1, 2, 4], nullable: true }
+        channelCount:
+          type: integer
+          enum: [8, 16, 32]
+          nullable: true
+        detectionRaw:
+          type: integer
+          minimum: 0
+          maximum: 4095
+          nullable: true
+          description: Filtered PC2 ADC conversion used by automatic detection.
+        detectionValid:
+          type: boolean
+          description: Legacy ADC diagnostic only; it is not a readiness gate in version 0.9.0.
+        adsVerified:
+          type: boolean
+          description: True after valid RAW27 data or sixteen consecutive valid RAW54 frames, as selected.
+        locked:
+          type: boolean
+          description: Topology is locked until the next device reboot.
+        stale:
+          type: boolean
+          description: ESP topology cache exceeded its 2.5 second freshness lease.
+        epoch:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Changes when a newly verified ADS topology replaces the prior topology.
+        recoveryAttempts: { type: integer, minimum: 0, maximum: 3 }
+        closeReason: { type: string, nullable: true }
+
+    XingShuCapabilities:
+      type: object
+      additionalProperties: true
+      properties:
+        protocolVersion: { type: integer, nullable: true }
+        firmwareVersion:
+          type: string
+          nullable: true
+          example: 0.9.0
+        firmwareVersionRaw:
+          type: integer
+          minimum: 0
+          nullable: true
+          example: 589824
+          description: Packed as 0xMMmmPPPP; firmware 0.9.0 is 0x00090000.
+        deviceId: { type: string, nullable: true }
+        deviceName: { type: string, nullable: true }
+        topology: { $ref: "#/components/schemas/XingShuTopology" }
+        boardCount: { type: integer, enum: [1, 2, 4], nullable: true }
+        channelCount: { type: integer, enum: [8, 16, 32], nullable: true }
+        activeTransport: { type: string, enum: [wifi, ble, udp], nullable: true }
+        configuredInputSampleRateHz: { type: integer, nullable: true }
+        effectiveSampleRateHz: { type: integer, nullable: true }
+        sampleRates:
+          type: array
+          items: { type: integer, enum: [250, 500, 1000, 2000, 4000, 8000, 16000] }
+        supportedSampleRates:
+          type: array
+          deprecated: true
+          description: Legacy alias for sampleRates.
+          items: { type: integer, enum: [250, 500, 1000, 2000, 4000, 8000, 16000] }
+        transports:
+          type: array
+          items: { type: string, enum: [wifi, ble, udp] }
+        bleMaxSampleRate: { type: integer, default: 1000 }
+        bleMaximumInputRateHz:
+          type: integer
+          deprecated: true
+          description: Legacy alias for bleMaxSampleRate.
+        bleEffectiveSampleRate:
+          type: integer
+          default: 500
+          description: BLE output ceiling; the BLE stream runs at min(input rate, this value). Older ESP32 firmware reports 250.
+        effectiveSampleRates:
+          type: object
+          description: Effective output rate keyed first by transport, then by input sample rate.
+          properties:
+            wifi:
+              type: object
+              additionalProperties: { type: number }
+            ble:
+              type: object
+              additionalProperties: { type: number }
+          additionalProperties: false
+        tcpPort: { type: integer, minimum: 1, maximum: 65535, default: 9000 }
+        transportOptions: { type: object, additionalProperties: true }
+        features: { type: object, additionalProperties: true }
+        transportConstraints: { type: object, additionalProperties: true }
+
+    XingShuLinkHealth:
+      type: object
+      additionalProperties: true
+      properties:
+        state: { type: string, nullable: true }
+        transport: { type: string, enum: [wifi, ble, udp], nullable: true }
+        connected: { type: boolean }
+        rssi:
+          type: number
+          nullable: true
+          description: Signal strength for the active transport when available; null for BLE sessions because Web Bluetooth does not expose live RSSI.
+        wifiRssiDbm:
+          type: number
+          nullable: true
+          description: ESP32 station RSSI reported by bridge health, independent of the active data transport.
+        uptimeMs: { type: integer, minimum: 0, nullable: true }
+        latencyMs: { type: number, minimum: 0, nullable: true }
+        lastFrameAt: { type: number, minimum: 0, nullable: true }
+        lastFrameAtMs:
+          type: number
+          minimum: 0
+          nullable: true
+          deprecated: true
+          description: Worker diagnostic alias for lastFrameAt.
+        dataAgeMs: { type: number, minimum: 0, nullable: true }
+        lastFrameAgeMs:
+          type: number
+          minimum: 0
+          nullable: true
+          deprecated: true
+          description: Compatibility alias for dataAgeMs; this is not transport RTT.
+        receivedFrames: { type: integer, minimum: 0, nullable: true }
+        framesReceived:
+          type: integer
+          minimum: 0
+          nullable: true
+          deprecated: true
+          description: Compatibility alias for receivedFrames.
+        validFrames:
+          type: integer
+          minimum: 0
+          nullable: true
+          deprecated: true
+          description: Worker diagnostic alias for receivedFrames.
+        samplesReceived: { type: integer, minimum: 0, nullable: true }
+        sequenceGaps: { type: integer, minimum: 0, nullable: true }
+        droppedFrames: { type: integer, minimum: 0, nullable: true }
+        missingFrames:
+          type: integer
+          minimum: 0
+          nullable: true
+          deprecated: true
+          description: Worker diagnostic alias for sequenceGaps.
+        crcErrors: { type: integer, minimum: 0, nullable: true }
+        queueDepth:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Device-side depth of the currently active transport queue.
+        queueDrops:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Device-side drops for the currently active transport; units are frames or notifications.
+        queuedSamples:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Samples currently buffered by the platform worker.
+        queueDroppedSamples:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Acquisition samples dropped by the bounded platform worker queue.
+        reconnectCount: { type: integer, minimum: 0, nullable: true }
+        bleMtu: { type: integer, nullable: true }
+
+    XingShuDeviceInfo:
+      type: object
+      required: [deviceId, name, transport]
+      properties:
+        deviceId: { type: string }
+        name: { type: string }
+        transport: { type: string, enum: [ble] }
+        rssi:
+          type: number
+          nullable: true
+          description: Signal strength for the active transport when available; null for BLE sessions because Web Bluetooth does not expose live RSSI.
+        wifiRssiDbm:
+          type: number
+          nullable: true
+          description: ESP32 station RSSI reported by bridge health, independent of the active data transport.
+        uptimeMs: { type: integer, minimum: 0, nullable: true }
+        paired: { type: boolean, default: false }
+        host: { type: string, nullable: true }
+        port: { type: integer, minimum: 1, maximum: 65535, nullable: true }
+
+    ServerStatus:
+      type: object
+      properties:
+        state: { type: string, enum: [idle, connecting, connected, paused, error] }
+        board: { type: string, nullable: true }
+        transport: { type: string, enum: [synthetic, serial, wifi, ble, udp, playback], nullable: true }
+        sampleRate:
+          type: number
+          nullable: true
+          description: Backward-compatible alias for the effective stream sample rate.
+        deviceSampleRate:
+          type: number
+          nullable: true
+          description: ADS acquisition rate configured on the device.
+        effectiveSampleRate:
+          type: number
+          nullable: true
+          description: Rate of samples delivered to platform processing and timestamps.
+        channelCount: { type: integer, nullable: true }
+        channelLabels: { type: array, items: { type: string } }
+        capabilities:
+          anyOf:
+            - $ref: "#/components/schemas/XingShuCapabilities"
+            - type: "null"
+        linkHealth:
+          anyOf:
+            - $ref: "#/components/schemas/XingShuLinkHealth"
+            - type: "null"
+        telemetry:
+          type: object
+          nullable: true
+          additionalProperties: true
+          properties:
+            battery:
+              anyOf:
+                - $ref: "#/components/schemas/BatteryTelemetry"
+                - type: "null"
+        filterConfig: { type: object, additionalProperties: true }
+        analysisConfig: { type: object, additionalProperties: true }
+        brainflowVersion: { type: string, nullable: true }
+        lastError: { type: string, nullable: true }
+
+    BatteryTelemetry:
+      type: object
+      description: >-
+        Device battery after platform filtering. Full is reported only from the
+        charger IC status pin (N1 Pro MP2615 CHGOK#, N1 LY4566 LED pin), never
+        from the voltage.
+      properties:
+        valid: { type: boolean }
+        percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
+        state: { type: string, enum: [discharging, charging, full, plugged, unknown] }
+        voltageMv: { type: integer, nullable: true, description: Filtered pack voltage. }
+        rawVoltageMv: { type: integer, nullable: true }
+        cellMv: { type: integer, nullable: true }
+        cellCount: { type: integer, description: "1 for N1, 2 for N1 Pro." }
+        charging: { type: boolean }
+        chargeComplete: { type: boolean }
+        adapterPresent: { type: boolean, nullable: true }
+        low: { type: boolean }
+        critical: { type: boolean }
+        estimating: { type: boolean }
+        receivedAtMs: { type: number }
+
+    SamplesEvent:
+      type: object
+      properties:
+        seq: { type: integer }
+        timestampMs: { type: number }
+        board: { type: string }
+        transport: { type: string, enum: [wifi, ble, udp, synthetic, serial, playback], nullable: true }
+        sampleRate:
+          type: number
+          exclusiveMinimum: 0
+          description: Display-stream rate for data, rawData, and sampleIndexStart.
+        deviceSampleRate:
+          type: number
+          nullable: true
+          description: Sampling rate configured on the acquisition device.
+        sourceSampleRate:
+          type: number
+          nullable: true
+          description: Rate of the source/acquisition coordinate before display decimation.
+        effectiveSampleRate:
+          type: number
+          nullable: true
+          description: Effective full-rate stream delivered by the active transport.
+        analysisSampleRate:
+          type: number
+          nullable: true
+          description: Rate used by the realtime analysis pipeline.
+        sampleIndexStart:
+          type: number
+          minimum: 0
+          nullable: true
+          description: Display-stream coordinate of data[0].
+        sourceSampleIndexStart:
+          type: number
+          minimum: 0
+          nullable: true
+          description: Source/acquisition coordinate corresponding to sampleIndexStart.
+        sampleIndexStride:
+          type: number
+          exclusiveMinimum: 0
+          nullable: true
+          description: Source samples represented by one display sample.
+        replaceHistory: { type: boolean, default: false }
+        resetMarkers: { type: boolean, default: false }
+        channelLabels: { type: array, items: { type: string } }
+        data:
+          type: array
+          description: Channel-major filtered EEG samples at sampleRate.
+          items: { type: array, items: { type: number } }
+        rawData:
+          type: array
+          description: Channel-major unfiltered EEG samples at sampleRate when available.
+          items: { type: array, items: { type: number } }
+        markers:
+          type: array
+          items: { $ref: "#/components/schemas/MarkerEvent" }
+        capabilities:
+          anyOf:
+            - $ref: "#/components/schemas/XingShuCapabilities"
+            - type: "null"
+        linkHealth:
+          anyOf:
+            - $ref: "#/components/schemas/XingShuLinkHealth"
+            - type: "null"
+        telemetry: { type: object, additionalProperties: true, nullable: true }
+    XingShuConnectionConfig:
+      type: object
+      description: |
+        XingShu N1 transport settings. WiFi requires host; BLE requires deviceId.
+        Device authentication is performed internally with the official-platform
+        one-shot RSA challenge and never accepts or persists a device token.
+        boardCount must be selected explicitly for every new connection.
+      required: [transport, boardCount, inputSampleRate]
+      properties:
+        transport: { type: string, enum: [wifi, ble] }
+        host: { type: string, nullable: true }
+        port: { type: integer, minimum: 1, maximum: 65535, default: 9000 }
+        deviceId: { type: string, nullable: true }
+        boardCount:
+          type: integer
+          enum: [1, 2]
+          description: One board selects 8 channels; two boards select 16-channel daisy-chain mode.
+        passkey:
+          type: string
+          minLength: 1
+          maxLength: 6
+          pattern: '^[0-9]{1,6}$'
+          description: Optional numeric BLE pairing code; values shorter than six digits are zero-padded.
+          writeOnly: true
+        inputSampleRate:
+          type: integer
+          enum: [250, 500, 1000, 2000, 4000, 8000, 16000]
+
+    SerialPortInfo:
+      type: object
+      properties:
+        path: { type: string }
+        manufacturer: { type: string, nullable: true }
+        serialNumber: { type: string, nullable: true }
+
+    ConnectRequest:
+      type: object
+      required: [board]
+      properties:
+        board:
+          type: string
+          description: Board id (e.g. synthetic, cyton, cyton_wifi, xingshu_n1, xingshu_n1_pro).
+        transport:
+          type: string
+          enum: [synthetic, serial, wifi, ble, udp, playback]
+          description: XingShu N1 accepts wifi or ble; XingShu N1 Pro accepts udp.
+        sampleRate:
+          type: number
+          nullable: true
+          deprecated: true
+          description: Legacy input sample-rate field retained for compatibility.
+        inputSampleRate:
+          type: integer
+          enum: [250, 500, 1000, 2000, 4000, 8000, 16000]
+        xingshu:
+          $ref: "#/components/schemas/XingShuConnectionConfig"
+        xingshuPro:
+          type: object
+          additionalProperties: true
+          description: XingShu N1 Pro UDP bind settings, including bindAddress and port.
+        serialPort: { type: string, nullable: true }
+        ipAddress:
+          type: string
+          nullable: true
+          deprecated: true
+          description: Legacy alias for xingshu.host.
+        ipPort:
+          type: integer
+          nullable: true
+          deprecated: true
+          description: Legacy alias for xingshu.port.
+        filterConfig: { type: object, additionalProperties: true }
+        analysisConfig: { type: object, additionalProperties: true }
+        autoRecord: { type: boolean, default: false }
+
+    MarkerRequest:
+      type: object
+      required: [value]
+      properties:
+        value: { type: number }
+        label: { type: string }
+
+    MarkerEvent:
+      type: object
+      properties:
+        id: { type: string }
+        value: { type: number }
+        label: { type: string, nullable: true }
+        timestampMs: { type: integer }
+        sampleIndex:
+          type: number
+          nullable: true
+          description: Compatibility coordinate; recording-local in recording/playback payloads and display-local in rendered sample events.
+        recordingSampleIndex:
+          type: number
+          minimum: 0
+          nullable: true
+          description: Recording-local sample coordinate.
+        acquisitionSampleIndex:
+          type: number
+          minimum: 0
+          nullable: true
+          description: Connection-global acquisition sample coordinate.
+        sourceSampleIndex:
+          type: number
+          minimum: 0
+          nullable: true
+          description: Generic source-stream sample coordinate when acquisitionSampleIndex is unavailable.
+        approximate: { type: boolean, default: false }
+    RecordingStatus:
+      type: object
+      properties:
+        recording:
+          type: object
+          properties:
+            state: { type: string, enum: [idle, recording, paused, saving] }
+            sessionPath: { type: string, nullable: true }
+            sampleCount: { type: integer }
+            durationSeconds: { type: number }
+        export:
+          type: object
+          properties:
+            state: { type: string, enum: [idle, exporting, completed, failed] }
+            filePath: { type: string, nullable: true }
+            message: { type: string, nullable: true }
+        playback:
+          type: object
+          properties:
+            state: { type: string, enum: [idle, loaded, playing, paused] }
+            sessionPath: { type: string, nullable: true }
+            positionSamples: { type: integer }
+            totalSamples: { type: integer }
+            speed: { type: number, default: 1 }
+        lastMarker:
+          $ref: "#/components/schemas/MarkerEvent"
+
+    NetworkingConfig:
+      type: object
+      properties:
+        protocol: { type: string, enum: [udp, tcp, serial] }
+        slots: { type: array, items: { type: object, additionalProperties: true } }
+
+    NetworkingStatus:
+      type: object
+      properties:
+        state: { type: string, enum: [inactive, active, waiting_source, reconfiguring, error] }
+        source: { type: string, enum: [idle, live, playback] }
+        slots: { type: array, items: { type: object, additionalProperties: true } }
+        lastError: { type: string, nullable: true }
+        updatedAt: { type: integer }
+
+    SignalQualitySnapshot:
+      type: object
+      properties:
+        state: { type: string, enum: [idle, checking, ready, error] }
+        mode: { type: string, enum: [preflight, playback, idle] }
+        channels:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              level: { type: string, enum: [good, fair, poor, bad] }
+              flatline: { type: boolean }
+              railedPercent: { type: number }
+
+    AnalysisSnapshot:
+      type: object
+      properties:
+        focus: { type: object, additionalProperties: true, nullable: true }
+        bands: { type: object, additionalProperties: true, nullable: true }
+        fft: { type: object, additionalProperties: true, nullable: true }
+
+    LogEntry:
+      type: object
+      properties:
+        level: { type: string, enum: [info, warn, error] }
+        message: { type: string }
+        timestampMs: { type: integer }
+
+    TokenInfo:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        scopes: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        lastUsedAt: { type: string, format: date-time, nullable: true }
+
+    TokenCreateRequest:
+      type: object
+      properties:
+        name: { type: string }
+        scopes:
+          type: array
+          items: { type: string, enum: [admin, control, data, stream, experiment, read_only] }
+        expiresInDays: { type: integer, default: 90 }
+
+    TokenCreateResponse:
+      allOf:
+        - $ref: "#/components/schemas/TokenInfo"
+        - type: object
+          properties:
+            token:
+              type: string
+              description: The raw token secret. Only returned at creation time.
+
+    ExperimentModelRegistration:
+      type: object
+      required: [modelId, name, paradigm, registeredAt, lastSeenAt, status]
+      properties:
+        modelId: { type: string }
+        name: { type: string }
+        version: { type: string, nullable: true }
+        paradigm: { type: string, enum: [ssvep] }
+        registeredAt: { type: string, format: date-time }
+        lastSeenAt: { type: string, format: date-time }
+        status: { type: string, enum: [online] }
+
+    ExperimentModelRegisterRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        version: { type: string, nullable: true }
+        paradigm: { type: string, enum: [ssvep], default: ssvep }
+
+    SsvepTarget:
+      type: object
+      required: [id, label, actionKey, frequencyHz, phasePi]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        actionKey: { type: string }
+        frequencyHz: { type: number }
+        phasePi: { type: number }
+
+    SsvepTrialWindow:
+      type: object
+      required: [modelId, runId, trialId, attemptId, experimentId, sampleRate, channelLabels, data, targets]
+      properties:
+        modelId: { type: string }
+        runId: { type: string }
+        trialId: { type: string }
+        attempt:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: One-based attempt number of this trial.
+        attemptId:
+          type: string
+          description: |
+            Unique id of this trial attempt (`<trialId>_attempt_<nn>`). The
+            prediction submitted for this window must echo it back verbatim.
+        experimentId: { type: string }
+        sampleRate: { type: number, exclusiveMinimum: 0 }
+        channelLabels: { type: array, items: { type: string } }
+        data:
+          type: array
+          description: Channel-major EEG values (channels x samples).
+          items: { type: array, items: { type: number } }
+        targets: { type: array, items: { $ref: "#/components/schemas/SsvepTarget" } }
+        sampleIndexStart: { type: integer, nullable: true }
+        sampleIndexEnd: { type: integer, nullable: true }
+        acquisitionSampleStart:
+          type: integer
+          nullable: true
+          description: Connection-global acquisition coordinate of data[…][0].
+        acquisitionSampleEndExclusive: { type: integer, nullable: true }
+        recordingSampleStart:
+          type: integer
+          nullable: true
+          description: Recording-local coordinate of data[…][0] when a recording is active.
+        recordingSampleEndExclusive: { type: integer, nullable: true }
+        windowStartTimestampMs: { type: number, nullable: true }
+        windowEndTimestampMs: { type: number, nullable: true }
+        stimulusFirstFrameTimestampMs: { type: number, nullable: true }
+        deadlineTimestampMs: { type: number, nullable: true }
+        metadata: { type: object, additionalProperties: true }
+
+    SsvepPredictionRequest:
+      type: object
+      required: [modelId, attemptId, targetId]
+      properties:
+        modelId: { type: string }
+        attemptId:
+          type: string
+          description: |
+            Must match the attemptId of the trial window being answered.
+            Missing -> 400 PREDICTION_ATTEMPT_REQUIRED; mismatched ->
+            409 PREDICTION_ATTEMPT_MISMATCH.
+        targetId:
+          type: [string, "null"]
+          description: A valid target id, or null when abstained is true.
+        abstained: { type: boolean, default: false }
+        scores:
+          type: object
+          additionalProperties: { type: number }
+        confidence: { type: number, nullable: true }
+        metadata: { type: object, additionalProperties: true }
+
+paths:
+  /healthz:
+    get:
+      tags: [System]
+      summary: Process liveness probe.
+      security: []
+      responses:
+        "200": { description: OK }
+
+  /readyz:
+    get:
+      tags: [System]
+      summary: Control-layer readiness probe.
+      security: []
+      responses:
+        "200": { description: Ready }
+        "503": { description: Not ready }
+
+  /v1/version:
+    get:
+      tags: [System]
+      summary: Returns application, API and BrainFlow versions.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/VersionInfo" } }
+
+  /v1/status:
+    get:
+      tags: [System]
+      summary: Returns full device + config status snapshot.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ServerStatus" } }
+
+  /v1/ports/serial:
+    get:
+      tags: [Device]
+      summary: List available serial ports.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ports:
+                    type: array
+                    items: { $ref: "#/components/schemas/SerialPortInfo" }
+
+  /v1/device/connect:
+    post:
+      tags: [Device]
+      summary: Connect a board with configuration.
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/ConnectRequest" } }
+      responses:
+        "200": { description: Connected, content: { application/json: { schema: { $ref: "#/components/schemas/Ok" } } } }
+
+  /v1/device/pause:
+    post: { tags: [Device], summary: Pause acquisition stream., responses: { "200": { description: OK } } }
+  /v1/device/resume:
+    post: { tags: [Device], summary: Resume paused stream., responses: { "200": { description: OK } } }
+  /v1/device/disconnect:
+    post: { tags: [Device], summary: Disconnect the current device., responses: { "200": { description: OK } } }
+
+  /v1/config/filter:
+    get: { tags: [Config], summary: Get current filter config., responses: { "200": { description: OK } } }
+    post: { tags: [Config], summary: Update filter config., responses: { "200": { description: OK } } }
+
+  /v1/config/analysis:
+    get: { tags: [Config], summary: Get current analysis config., responses: { "200": { description: OK } } }
+    post: { tags: [Config], summary: Update analysis config., responses: { "200": { description: OK } } }
+
+  /v1/recording/status:
+    get:
+      tags: [Recording]
+      summary: Get recording status snapshot.
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/RecordingStatus" } } }
+
+  /v1/recording/start:
+    post: { tags: [Recording], summary: Start a new recording session., responses: { "200": { description: OK } } }
+  /v1/recording/pause:
+    post: { tags: [Recording], summary: Pause the current recording., responses: { "200": { description: OK } } }
+  /v1/recording/resume:
+    post: { tags: [Recording], summary: Resume paused recording., responses: { "200": { description: OK } } }
+  /v1/recording/stop:
+    post: { tags: [Recording], summary: Stop the current recording., responses: { "200": { description: OK } } }
+  /v1/recording/markers:
+    post:
+      tags: [Recording]
+      summary: Insert an event marker.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MarkerRequest" } } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  marker: { $ref: "#/components/schemas/MarkerEvent" }
+
+  /v1/playback/open:
+    post: { tags: [Playback], summary: Open playback session via file dialog., responses: { "200": { description: OK } } }
+  /v1/playback/start:
+    post:
+      tags: [Playback]
+      summary: Start or resume playback.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                speed: { type: number, default: 1 }
+      responses: { "200": { description: OK } }
+  /v1/playback/pause:
+    post: { tags: [Playback], summary: Pause playback., responses: { "200": { description: OK } } }
+  /v1/playback/seek:
+    post:
+      tags: [Playback]
+      summary: Seek playback to a sample index.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [positionSamples]
+              properties:
+                positionSamples: { type: integer }
+      responses: { "200": { description: OK } }
+  /v1/playback/stop:
+    post: { tags: [Playback], summary: Stop playback., responses: { "200": { description: OK } } }
+  /v1/playback/export/bdf:
+    post: { tags: [Playback], summary: Export playback session to BDF+ file., responses: { "200": { description: OK } } }
+
+  /v1/signal-quality/latest:
+    get:
+      tags: [SignalQuality]
+      summary: Latest signal-quality snapshot.
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/SignalQualitySnapshot" } } }
+  /v1/signal-quality/start:
+    post: { tags: [SignalQuality], summary: Start signal-quality check., responses: { "200": { description: OK } } }
+  /v1/signal-quality/stop:
+    post: { tags: [SignalQuality], summary: Stop signal-quality check., responses: { "200": { description: OK } } }
+
+  /v1/networking/config:
+    get:
+      tags: [Networking]
+      summary: Get networking output config.
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/NetworkingConfig" } } }
+    post:
+      tags: [Networking]
+      summary: Update networking output config.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/NetworkingConfig" } } }
+      responses: { "200": { description: OK } }
+  /v1/networking/status:
+    get:
+      tags: [Networking]
+      summary: Current networking output status.
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/NetworkingStatus" } } }
+  /v1/networking/start:
+    post: { tags: [Networking], summary: Start networking output., responses: { "200": { description: OK } } }
+  /v1/networking/stop:
+    post: { tags: [Networking], summary: Stop networking output., responses: { "200": { description: OK } } }
+
+  /v1/analysis/latest:
+    get:
+      tags: [Analysis]
+      summary: Latest full analysis snapshot.
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/AnalysisSnapshot" } } }
+  /v1/analysis/focus/latest:
+    get: { tags: [Analysis], summary: Latest focus/relaxation metric., responses: { "200": { description: OK } } }
+  /v1/analysis/bands/latest:
+    get: { tags: [Analysis], summary: Latest band-power snapshot., responses: { "200": { description: OK } } }
+
+  /v1/logs:
+    get:
+      tags: [Logs]
+      summary: Last N application log entries.
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 200, maximum: 500 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/LogEntry" }
+
+  /v1/experiments/models:
+    get:
+      tags: [Experiments]
+      summary: List online external experiment models (experiment scope).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items: { $ref: "#/components/schemas/ExperimentModelRegistration" }
+        "503": { description: Experiment service unavailable }
+
+  /v1/experiments/models/register:
+    post:
+      tags: [Experiments]
+      summary: Register an external classifier (experiment scope).
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/ExperimentModelRegisterRequest" } }
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ExperimentModelRegistration" } }
+        "400": { description: Invalid registration }
+        "409": { description: Conflicting registration }
+        "503": { description: Experiment service unavailable }
+
+  /v1/experiments/models/{modelId}/heartbeat:
+    post:
+      tags: [Experiments]
+      summary: Refresh an external model heartbeat (experiment scope).
+      parameters:
+        - in: path
+          name: modelId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Heartbeat accepted }
+        "403": { description: Model belongs to another token }
+        "404": { description: Model not found }
+
+  /v1/experiments/models/{modelId}:
+    delete:
+      tags: [Experiments]
+      summary: Unregister an external model (experiment scope).
+      parameters:
+        - in: path
+          name: modelId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Unregistered }
+        "403": { description: Model belongs to another token }
+        "404": { description: Model not found }
+
+  /v1/experiments/runs/{runId}/trials/{trialId}/prediction:
+    post:
+      tags: [Experiments]
+      summary: Submit an external SSVEP prediction (experiment scope).
+      parameters:
+        - in: path
+          name: runId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: trialId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/SsvepPredictionRequest" } }
+      responses:
+        "200": { description: Prediction accepted }
+        "400": { description: Invalid prediction (missing attemptId, invalid targetId, ...) }
+        "403": { description: Model belongs to another token }
+        "404": { description: Run, trial or model not found }
+        "409": { description: Duplicate, late, attempt-mismatched or conflicting prediction }
+        "503": { description: Experiment service unavailable }
+
+  /v1/auth/tokens:
+    get:
+      tags: [Auth]
+      summary: List existing tokens (admin scope).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens:
+                    type: array
+                    items: { $ref: "#/components/schemas/TokenInfo" }
+    post:
+      tags: [Auth]
+      summary: Create a new token (admin scope).
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TokenCreateRequest" } } }
+      responses:
+        "201":
+          description: Token created
+          content: { application/json: { schema: { $ref: "#/components/schemas/TokenCreateResponse" } } }
+
+  /v1/auth/tokens/revoke:
+    post:
+      tags: [Auth]
+      summary: Revoke a token (admin scope).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: string }
+      responses: { "200": { description: OK } }
+
+  /v1/events:
+    get:
+      tags: [System]
+      summary: WebSocket event stream (upgrade required).
+      description: |
+        Upgrade an HTTP request to WebSocket. Authenticate with the
+        `Authorization: Bearer` header on the upgrade request (preferred; the
+        official SDKs do this). The `?token=` query parameter is a fallback
+        for clients that cannot set upgrade headers; when used, the token must
+        be URL-encoded and the client should be aware that query strings can
+        leak into logs and proxies. Optional `?events=samples,analysis`
+        filters the event types pushed to the client.
+        Each frame is a JSON envelope `{ type, seq, timestampMs, payload }`.
+        `seq` restarts when the connection is re-established; events published
+        while a client is disconnected are not replayed.
+        A `samples` payload uses `SamplesEvent`; a `status` payload uses
+        `ServerStatus`. XingShu N1 payloads distinguish deviceSampleRate from
+        effectiveSampleRate, especially when BLE decimation is active.
+        `experiment.trial.window` payloads use the `SsvepTrialWindow` schema and
+        are sent only to the token that owns the selected external model.
+      responses:
+        "101": { description: Switching Protocols }
+        "401": { description: Unauthorized }
+        "403": { description: Forbidden }
